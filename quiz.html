@@ -209,11 +209,16 @@ A …… B …… C …… D ……
     </div>
     <div class="card">
       <h3>备份与恢复</h3>
-      <p class="muted small">所有题库和做题记录只保存在当前这个浏览器里。换电脑、换浏览器或清理浏览器数据之前，请先导出备份。</p>
+      <p class="muted small">所有题库和做题记录只保存在当前这个浏览器里，手机和电脑不会自动同步。</p>
+      <p class="muted small"><b>同步方法：</b>在一台设备上“导出全部数据”，把文件发到另一台设备，点“导入备份并合并”。两边的题库、做题次数、错题本和每日统计会合在一起，谁也不会覆盖谁；同一个备份导入多次也不会重复计数。两边都想同步，就互相各导一次。</p>
       <div class="actions">
         <button class="btn primary" id="set-export">导出全部数据</button>
-        <label class="btn">导入备份文件<input type="file" id="set-import" accept=".json,application/json" hidden></label>
+        <label class="btn">导入备份并合并<input type="file" id="set-import" accept=".json,application/json" hidden></label>
       </div>
+      <details style="margin-top:12px"><summary class="muted small" style="cursor:pointer">其他：用备份覆盖当前数据</summary>
+        <p class="muted small">会删除当前浏览器里的全部题库和记录，换成备份里的内容。</p>
+        <label class="btn danger">用备份覆盖<input type="file" id="set-overwrite" accept=".json,application/json" hidden></label>
+      </details>
     </div>
     <div class="card">
       <h3>清除数据</h3>
@@ -240,12 +245,38 @@ const clip = (s, n) => { s = String(s).replace(/\s+/g, ' ').trim(); return s.len
 const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
 function today(d) { d = d || new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 
-function blank() { return {banks: [], rec: {}, pos: {}, daily: {}, theme: 'auto'}; }
+/* 数据结构（ver 2）：
+   rec[题目id] = {by: {设备id: {a 作答, c 答对, w 答错}}, streak, inWrong, last}
+   daily[设备id][日期] = {n, c}
+   每台设备只增加自己那一份计数，合并时同一设备取较大值，所以重复合并同一个备份不会重复计数。 */
+function blank() { return {ver: 2, device: uid(), banks: [], rec: {}, pos: {}, daily: {}, theme: 'auto'}; }
+function migrate(d, fallbackDev) {
+  const s = Object.assign(blank(), d);
+  if (!d.device) s.device = fallbackDev || uid();
+  Object.keys(s.rec).forEach(id => {
+    const r = s.rec[id];
+    if (r && !r.by) s.rec[id] = {by: {[s.device]: {a: r.a || 0, c: r.c || 0, w: r.w || 0}}, streak: r.streak || 0, inWrong: !!r.inWrong, last: r.last || 0};
+  });
+  const dk = Object.keys(s.daily);
+  if (dk.length && dk.every(k => /^\d{4}-\d{2}-\d{2}$/.test(k))) s.daily = {[s.device]: s.daily};
+  s.ver = 2;
+  return s;
+}
 function load() {
-  try { const d = JSON.parse(localStorage.getItem(KEY)); if (d && Array.isArray(d.banks)) return Object.assign(blank(), d); } catch (e) {}
+  try { const d = JSON.parse(localStorage.getItem(KEY)); if (d && Array.isArray(d.banks)) return migrate(d); } catch (e) {}
   return blank();
 }
 let S = load();
+function tot(r) {
+  const t = {a: 0, c: 0, w: 0};
+  if (r && r.by) Object.values(r.by).forEach(x => { t.a += x.a || 0; t.c += x.c || 0; t.w += x.w || 0; });
+  return t;
+}
+function dayTot(k) {
+  const t = {n: 0, c: 0};
+  Object.values(S.daily).forEach(m => { const x = m && m[k]; if (x) { t.n += x.n || 0; t.c += x.c || 0; } });
+  return t;
+}
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('保存失败：' + e.message); } }
 
 let toastT;
@@ -406,8 +437,8 @@ function bankStats(b) {
   const s = {total: b.questions.length, single: 0, multi: 0, judge: 0, done: 0, a: 0, c: 0, wrong: 0};
   b.questions.forEach(q => {
     s[q.type]++;
-    const r = S.rec[q.id];
-    if (r && r.a) { s.done++; s.a += r.a; s.c += r.c; if (r.inWrong) s.wrong++; }
+    const r = S.rec[q.id], t = tot(r);
+    if (t.a) { s.done++; s.a += t.a; s.c += t.c; if (r.inWrong) s.wrong++; }
   });
   return s;
 }
@@ -554,7 +585,7 @@ function renderPractice() {
       </div></div>`;
     return;
   }
-  const q = curQ(), done = P.done[q.id], r = S.rec[q.id];
+  const q = curQ(), done = P.done[q.id], r = S.rec[q.id], rt = tot(r);
   const keys = optKeys(q), right = correctKeys(q);
   const labels = q.type === 'judge' ? ['对', '错'] : q.options;
   const sel = done ? done.sel.split('') : [...P.sel];
@@ -577,7 +608,7 @@ function renderPractice() {
     <div class="card">
       <div class="qmeta"><span class="badge t-${q.type}">${TYPE_NAME[q.type]}</span>
         <span class="muted small">第 ${P.i + 1} / ${n} 题</span>
-        ${r && r.a ? `<span class="muted small">· 历史作答 ${r.a} 次，错 ${r.w} 次${r.inWrong ? ' · 在错题本中' : ''}</span>` : ''}</div>
+        ${rt.a ? `<span class="muted small">· 历史作答 ${rt.a} 次，错 ${rt.w} 次${r.inWrong ? ' · 在错题本中' : ''}</span>` : ''}</div>
       ${q.material ? `<details class="material" open><summary>材料</summary><div class="pre">${esc(q.material)}</div></details>` : ''}
       <div class="stem pre">${esc(q.stem)}</div>
       <div class="opts ${q.type === 'judge' ? 'judge-row' : ''} ${done ? 'locked' : ''}">${opts}</div>
@@ -594,12 +625,14 @@ function renderPractice() {
     <p class="kbd-hint muted small" style="text-align:center">快捷键：1–6 或 A–F 选择（判断题 1=对 2=错）· Enter 确认 / 下一题 · ← → 切换题目</p>`;
 }
 function record(q, ok) {
-  const r = S.rec[q.id] || (S.rec[q.id] = {a: 0, c: 0, w: 0, streak: 0, inWrong: false});
+  const r = S.rec[q.id] || (S.rec[q.id] = {by: {}, streak: 0, inWrong: false, last: 0});
+  const me = r.by[S.device] || (r.by[S.device] = {a: 0, c: 0, w: 0});
   let removed = false, added = false;
-  r.a++; r.last = Date.now();
-  if (ok) { r.c++; r.streak++; if (r.inWrong && r.streak >= 2) { r.inWrong = false; removed = true; } }
-  else { r.w++; r.streak = 0; if (!r.inWrong) added = true; r.inWrong = true; }
-  const d = S.daily[today()] || (S.daily[today()] = {n: 0, c: 0});
+  me.a++; r.last = Date.now();
+  if (ok) { me.c++; r.streak++; if (r.inWrong && r.streak >= 2) { r.inWrong = false; removed = true; } }
+  else { me.w++; r.streak = 0; if (!r.inWrong) added = true; r.inWrong = true; }
+  const dm = S.daily[S.device] || (S.daily[S.device] = {});
+  const d = dm[today()] || (dm[today()] = {n: 0, c: 0});
   d.n++; if (ok) d.c++;
   save();
   return {removed, added};
@@ -661,15 +694,15 @@ function renderStats() {
   const el = $('#v-stats');
   let a = 0, c = 0, wrong = 0;
   S.banks.forEach(b => { const s = bankStats(b); a += s.a; c += s.c; wrong += s.wrong; });
-  const td = S.daily[today()] || {n: 0, c: 0};
+  const td = dayTot(today());
   // 最近 14 天
   const days = [];
-  for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); const k = today(d); days.push({k, label: (d.getMonth() + 1) + '/' + d.getDate(), v: S.daily[k] || {n: 0, c: 0}}); }
+  for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); const k = today(d); days.push({k, label: (d.getMonth() + 1) + '/' + d.getDate(), v: dayTot(k)}); }
   const max = Math.max(1, ...days.map(d => d.v.n));
   const n14 = days.reduce((s, d) => s + d.v.n, 0);
   // 易错题
   const pool = [];
-  S.banks.forEach(b => { if (statBank && b.id !== statBank) return; b.questions.forEach(q => { const r = S.rec[q.id]; if (r && r.w) pool.push({q, r, bank: b.name}); }); });
+  S.banks.forEach(b => { if (statBank && b.id !== statBank) return; b.questions.forEach(q => { const r = tot(S.rec[q.id]); if (r.w) pool.push({q, r, bank: b.name}); }); });
   pool.sort((x, y) => y.r.w - x.r.w || (y.r.w / y.r.a) - (x.r.w / x.r.a));
   const top = pool.slice(0, 10);
   el.innerHTML = `<h2>学习统计</h2>
@@ -707,14 +740,62 @@ $('#set-theme').addEventListener('change', e => { S.theme = e.target.value; save
 $('#set-export').addEventListener('click', () => {
   download(`刷题本备份-${today().replace(/-/g, '')}.json`, JSON.stringify(Object.assign({app: 'shuati', version: 1, exported: new Date().toISOString()}, S)));
 });
+async function readBackup(f) {
+  const d = JSON.parse(await readFileText(f));
+  if (!d || !Array.isArray(d.banks)) throw new Error('不是刷题本的备份文件');
+  return d;
+}
+const qKey = q => q.stem + '|' + (q.material || '');
+function mergeBackup(d) {
+  const inc = migrate(d, 'legacy-' + (d.exported || 'backup'));
+  const st = {banks: 0, qs: 0, recs: 0};
+  const idMap = {}; // 备份里的题目 id → 本地题目 id
+  inc.banks.forEach(ib => {
+    let lb = getBank(ib.id) || S.banks.find(b => b.name === ib.name);
+    if (!lb) { lb = {id: ib.id, name: ib.name, created: ib.created || Date.now(), questions: []}; S.banks.push(lb); st.banks++; }
+    const byKey = new Map(lb.questions.map(q => [qKey(q), q]));
+    (ib.questions || []).forEach(iq => {
+      let lq = byKey.get(qKey(iq));
+      if (!lq) { lq = Object.assign({}, iq); lb.questions.push(lq); byKey.set(qKey(lq), lq); st.qs++; }
+      idMap[iq.id] = lq.id;
+    });
+    if (inc.pos[ib.id] != null && S.pos[lb.id] == null) S.pos[lb.id] = inc.pos[ib.id];
+  });
+  Object.keys(inc.rec).forEach(iid => {
+    const lid = idMap[iid], ir = inc.rec[iid]; if (!lid || !ir) return;
+    const lr = S.rec[lid] || (S.rec[lid] = {by: {}, streak: 0, inWrong: false, last: 0});
+    const before = tot(lr).a;
+    Object.keys(ir.by || {}).forEach(dev => {
+      const a = ir.by[dev], b = lr.by[dev];
+      if (!b || (a.a || 0) > (b.a || 0)) lr.by[dev] = {a: a.a || 0, c: a.c || 0, w: a.w || 0};
+    });
+    // 错题本状态以最近一次作答的那台设备为准
+    if ((ir.last || 0) > (lr.last || 0)) { lr.last = ir.last; lr.streak = ir.streak || 0; lr.inWrong = !!ir.inWrong; }
+    if (tot(lr).a !== before) st.recs++;
+  });
+  Object.keys(inc.daily).forEach(dev => {
+    const m = inc.daily[dev] || {}, lm = S.daily[dev] || (S.daily[dev] = {});
+    Object.keys(m).forEach(k => { if (!lm[k] || (m[k].n || 0) > (lm[k].n || 0)) lm[k] = {n: m[k].n || 0, c: m[k].c || 0}; });
+  });
+  save();
+  return st;
+}
 $('#set-import').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
-    const d = JSON.parse(await readFileText(f));
-    if (!d || !Array.isArray(d.banks)) throw new Error('不是刷题本的备份文件');
-    if (!confirm(`备份里有 ${d.banks.length} 个题库。恢复后会覆盖当前所有数据，确定吗？`)) return;
-    S = Object.assign(blank(), {banks: d.banks, rec: d.rec || {}, pos: d.pos || {}, daily: d.daily || {}, theme: d.theme || S.theme});
-    save(); applyTheme(); toast('已恢复备份'); go('banks');
+    const st = mergeBackup(await readBackup(f));
+    toast(st.banks || st.qs || st.recs ? `合并完成：新增题库 ${st.banks} 个、题目 ${st.qs} 道，更新做题记录 ${st.recs} 道` : '合并完成：没有新内容');
+    go('banks');
+  } catch (err) { toast('导入失败：' + err.message); }
+});
+$('#set-overwrite').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const d = await readBackup(f);
+    if (!confirm(`备份里有 ${d.banks.length} 个题库。覆盖后，当前浏览器里的所有题库和做题记录都会被替换，无法恢复。确定吗？`)) return;
+    const dev = S.device, inc = migrate(d, 'legacy-' + (d.exported || 'backup'));
+    S = Object.assign(inc, {device: dev, theme: S.theme}); // 保留本机的设备编号
+    save(); toast('已用备份覆盖'); go('banks');
   } catch (err) { toast('导入失败：' + err.message); }
 });
 $('#set-clear-rec').addEventListener('click', () => {
@@ -723,9 +804,10 @@ $('#set-clear-rec').addEventListener('click', () => {
 });
 $('#set-clear-all').addEventListener('click', () => {
   if (!confirm('确定删除全部题库和做题记录吗？此操作无法恢复，建议先导出备份。')) return;
-  const theme = S.theme; S = blank(); S.theme = theme; save(); toast('已删除全部数据'); go('banks');
+  const theme = S.theme, dev = S.device; S = blank(); S.theme = theme; S.device = dev; save(); toast('已删除全部数据'); go('banks');
 });
 
+save(); // 记住本机的设备编号，并保存旧数据迁移后的结果
 applyTheme();
 go('banks');
 </script>
