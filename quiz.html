@@ -62,6 +62,11 @@ details.menu>summary::-webkit-details-marker{display:none}
 .menu-pop button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);font:inherit;padding:8px 10px;border-radius:6px;cursor:pointer}
 .menu-pop button:hover{background:var(--accent-weak)}
 .empty{text-align:center;padding:36px 16px}
+.resume{border-color:var(--accent);background:var(--accent-weak)}
+.resume-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:10px}
+.resume-row+.resume-row{border-top:1px solid var(--line);margin-top:10px}
+.resume-btns{display:flex;gap:4px;flex:none}
+.linkbtn{background:none;border:0;padding:0 4px;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline}
 /* practice */
 .pbar{display:flex;align-items:center;gap:8px}
 .ptitle{flex:1;text-align:center;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -249,7 +254,7 @@ function today(d) { d = d || new Date(); return d.getFullYear() + '-' + String(d
    rec[题目id] = {by: {设备id: {a 作答, c 答对, w 答错}}, streak, inWrong, last}
    daily[设备id][日期] = {n, c}
    每台设备只增加自己那一份计数，合并时同一设备取较大值，所以重复合并同一个备份不会重复计数。 */
-function blank() { return {ver: 2, device: uid(), banks: [], rec: {}, pos: {}, daily: {}, theme: 'auto'}; }
+function blank() { return {ver: 2, device: uid(), banks: [], rec: {}, pos: {}, daily: {}, sessions: {}, theme: 'auto'}; }
 function migrate(d, fallbackDev) {
   const s = Object.assign(blank(), d);
   if (!d.device) s.device = fallbackDev || uid();
@@ -448,8 +453,21 @@ function renderBanks() {
     el.innerHTML = `<div class="card empty"><h2>还没有题库</h2><p class="muted">先导入你的题目吧，可以粘贴文本，也可以选择 .txt / .json 文件。</p><button class="btn primary" data-act="goimport">导入题库</button></div>`;
     return;
   }
-  el.innerHTML = `<div class="head-row"><h2>我的题库</h2><button class="btn" data-act="goimport">＋ 导入</button></div>` + S.banks.map(b => {
-    const st = bankStats(b), pos = S.pos[b.id] || 0;
+  // 未完成的练习，最近的排前面
+  const unfinished = Object.keys(S.sessions || {}).map(k => ({k, g: getSession(k)})).filter(x => x.g)
+    .sort((a, b) => (b.g.s.updated || 0) - (a.g.s.updated || 0));
+  const resumeHtml = unfinished.length ? `<div class="card resume"><h3>继续上次刷题</h3>${unfinished.map(({k, g}) => `
+      <div class="resume-row"><div style="min-width:0"><b>${esc(g.s.title)}</b> · ${MODE_NAME[g.s.mode]}
+        <div class="muted small">停在第 ${g.i + 1} / ${g.list.length} 题 · 已答 ${g.answered} 题</div></div>
+        <div class="resume-btns"><button class="btn primary" data-act="resume" data-key="${esc(k)}">继续</button>
+        <button class="btn ghost small" data-act="drop" data-key="${esc(k)}" title="放弃这次进度">放弃</button></div></div>`).join('')}</div>` : '';
+  const sessLabel = (bankId, mode, base) => {
+    const g = getSession(sessKey(bankId, mode));
+    return g ? `继续${base}（第 ${g.i + 1}/${g.list.length} 题）` : base;
+  };
+  el.innerHTML = `<div class="head-row"><h2>我的题库</h2><button class="btn" data-act="goimport">＋ 导入</button></div>` + resumeHtml + S.banks.map(b => {
+    const st = bankStats(b);
+    const hasSeq = !!getSession(sessKey(b.id, 'seq')), hasRnd = !!getSession(sessKey(b.id, 'random'));
     return `<div class="card">
       <div class="bank-top"><div style="min-width:0"><h3>${esc(b.name)}</h3>
         <div class="muted small">${st.total} 题 · 单选 ${st.single} · 多选 ${st.multi} · 判断 ${st.judge}</div></div>
@@ -461,18 +479,30 @@ function renderBanks() {
       <div class="progress" title="已做 ${st.done}/${st.total}"><div style="width:${st.total ? st.done / st.total * 100 : 0}%"></div></div>
       <div class="muted small">已做 ${st.done}/${st.total} · 正确率 ${pct(st.c, st.a)} · 错题本 ${st.wrong} 题</div>
       <div class="actions">
-        <button class="btn primary" data-act="seq" data-id="${b.id}">顺序练习${pos > 0 && pos < st.total ? `（从第 ${pos + 1} 题继续）` : ''}</button>
-        <button class="btn" data-act="random" data-id="${b.id}">随机练习</button>
-        <button class="btn" data-act="wrong" data-id="${b.id}" ${st.wrong ? '' : 'disabled'}>错题本 ${st.wrong}</button>
-      </div></div>`;
+        <button class="btn primary" data-act="seq" data-id="${b.id}">${sessLabel(b.id, 'seq', '顺序练习')}</button>
+        <button class="btn" data-act="random" data-id="${b.id}">${sessLabel(b.id, 'random', '随机练习')}</button>
+        <button class="btn" data-act="wrong" data-id="${b.id}" ${st.wrong || getSession(sessKey(b.id, 'wrong')) ? '' : 'disabled'}>${getSession(sessKey(b.id, 'wrong')) ? sessLabel(b.id, 'wrong', '错题本') : '错题本 ' + st.wrong}</button>
+      </div>
+      ${hasSeq || hasRnd ? `<div class="muted small" style="margin-top:8px">想从头开始？
+        ${hasSeq ? `<button class="linkbtn" data-act="seq-new" data-id="${b.id}">顺序从第 1 题重新开始</button>` : ''}
+        ${hasRnd ? `<button class="linkbtn" data-act="random-new" data-id="${b.id}">重新随机出题</button>` : ''}</div>` : ''}
+      </div>`;
   }).join('');
 }
 $('#v-banks').addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const id = b.dataset.id, bank = id && getBank(id), act = b.dataset.act;
   if (act === 'goimport') return go('import');
+  if (act === 'resume') { if (!resumeSession(b.dataset.key)) renderBanks(); return; }
+  if (act === 'drop') {
+    if (!confirm('放弃这次的刷题进度吗？已经答过的题的对错记录和错题本不受影响。')) return;
+    const s = S.sessions[b.dataset.key];
+    if (s && s.mode === 'seq') S.pos[s.bankId] = 0;
+    delete S.sessions[b.dataset.key]; save(); renderBanks(); return;
+  }
   if (!bank) return;
   if (act === 'seq' || act === 'random' || act === 'wrong') return startPractice(bank.id, act);
+  if (act === 'seq-new' || act === 'random-new') return startPractice(bank.id, act.replace('-new', ''), true);
   b.closest('details') && b.closest('details').removeAttribute('open');
   if (act === 'rename') {
     const n = prompt('新的题库名称', bank.name);
@@ -483,6 +513,7 @@ $('#v-banks').addEventListener('click', e => {
     if (!confirm(`确定删除题库“${bank.name}”吗？其中 ${bank.questions.length} 道题和对应的做题记录都会被删除，无法恢复。`)) return;
     bank.questions.forEach(q => delete S.rec[q.id]);
     delete S.pos[bank.id];
+    Object.keys(S.sessions).forEach(k => { if (S.sessions[k].bankId === bank.id) delete S.sessions[k]; });
     S.banks = S.banks.filter(x => x !== bank); save(); renderBanks(); toast('已删除');
   }
 });
@@ -547,21 +578,47 @@ function doImport() {
 /* ========== 练习 ========== */
 let P = null;
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
-function startPractice(bankId, mode) {
+/* 未完成的练习保存在 S.sessions 里，键为“题库id:模式”（专项练习为 custom），退出或刷新后可以继续 */
+const sessKey = (bankId, mode) => mode === 'custom' ? 'custom' : bankId + ':' + mode;
+function persistP() {
+  if (!P || !P.key) return;
+  if (P.finished) delete S.sessions[P.key];
+  else S.sessions[P.key] = {bankId: P.bankId, mode: P.mode, title: P.title, ids: P.list.map(q => q.id), i: P.i, done: P.done, updated: Date.now()};
+  save();
+}
+function findQ(id) { for (const b of S.banks) { const q = b.questions.find(x => x.id === id); if (q) return q; } return null; }
+function getSession(key) {
+  const s = S.sessions && S.sessions[key]; if (!s) return null;
+  const list = s.ids.map(findQ).filter(Boolean);
+  if (!list.length) { delete S.sessions[key]; save(); return null; }
+  return {s, list, i: Math.min(s.i || 0, list.length - 1), answered: Object.keys(s.done || {}).filter(id => list.some(q => q.id === id)).length};
+}
+function resumeSession(key) {
+  const g = getSession(key); if (!g) return false;
+  const done = {}; g.list.forEach(q => { if (g.s.done && g.s.done[q.id]) done[q.id] = g.s.done[q.id]; });
+  P = {key, bankId: g.s.bankId, title: g.s.title, mode: g.s.mode, list: g.list, i: g.i, done, sel: new Set(), card: false, finished: false};
+  persistP(); go('practice');
+  toast(`已回到上次的进度：第 ${g.i + 1} 题`);
+  return true;
+}
+function startPractice(bankId, mode, fresh) {
   const bank = getBank(bankId); if (!bank) return;
+  const key = sessKey(bankId, mode);
+  if (!fresh && resumeSession(key)) return;
   let list = bank.questions.slice();
   if (mode === 'random') shuffle(list);
   if (mode === 'wrong') list = list.filter(q => S.rec[q.id] && S.rec[q.id].inWrong);
-  if (!list.length) { toast(mode === 'wrong' ? '错题本是空的' : '题库是空的'); return; }
+  if (!list.length) { delete S.sessions[key]; save(); toast(mode === 'wrong' ? '错题本是空的' : '题库是空的'); return; }
   let i = 0;
-  if (mode === 'seq') { i = S.pos[bankId] || 0; if (i >= list.length) i = 0; }
-  P = {bankId, title: bank.name, mode, list, i, done: {}, sel: new Set(), card: false, finished: false};
-  go('practice');
+  if (mode === 'seq' && !fresh) { i = S.pos[bankId] || 0; if (i >= list.length) i = 0; }
+  if (mode === 'seq' && fresh) { S.pos[bankId] = 0; }
+  P = {key, bankId, title: bank.name, mode, list, i, done: {}, sel: new Set(), card: false, finished: false};
+  persistP(); go('practice');
 }
 function startCustom(qs, title) {
   if (!qs.length) return;
-  P = {bankId: null, title, mode: 'custom', list: qs, i: 0, done: {}, sel: new Set(), card: false, finished: false};
-  go('practice');
+  P = {key: 'custom', bankId: null, title, mode: 'custom', list: qs, i: 0, done: {}, sel: new Set(), card: false, finished: false};
+  persistP(); go('practice');
 }
 const curQ = () => P.list[P.i];
 const optKeys = q => q.type === 'judge' ? ['T', 'F'] : q.options.map((_, i) => LET[i]);
@@ -641,6 +698,7 @@ function submit(sel) {
   const q = curQ(); if (P.done[q.id]) return;
   const ok = sel === correctKeys(q).slice().sort().join('');
   P.done[q.id] = Object.assign({sel, ok}, record(q, ok));
+  persistP();
   renderPractice();
 }
 function choose(k) {
@@ -654,12 +712,13 @@ function confirmMulti() {
 }
 function moveTo(i) {
   P.i = i; P.sel = new Set();
-  if (P.mode === 'seq') { S.pos[P.bankId] = i; save(); }
+  if (P.mode === 'seq') S.pos[P.bankId] = i;
+  persistP();
   renderPractice(); window.scrollTo(0, 0);
 }
 function next() {
   if (P.i < P.list.length - 1) moveTo(P.i + 1);
-  else { P.finished = true; if (P.mode === 'seq') { S.pos[P.bankId] = 0; save(); } renderPractice(); }
+  else { P.finished = true; if (P.mode === 'seq') S.pos[P.bankId] = 0; persistP(); renderPractice(); }
 }
 function prev() { if (P.i > 0) moveTo(P.i - 1); }
 $('#v-practice').addEventListener('click', e => {
@@ -671,8 +730,8 @@ $('#v-practice').addEventListener('click', e => {
   else if (act === 'prev') prev();
   else if (act === 'card') { P.card = !P.card; renderPractice(); }
   else if (act === 'jump') moveTo(+b.dataset.i);
-  else if (act === 'exit') { P = null; go('banks'); }
-  else if (act === 'again') startPractice(P.bankId, P.mode === 'wrong' ? 'wrong' : P.mode);
+  else if (act === 'exit') { const saved = !P.finished && Object.keys(P.done).length; P = null; go('banks'); if (saved) toast('进度已保存，下次可以继续'); }
+  else if (act === 'again') startPractice(P.bankId, P.mode, true);
   else if (act === 'redo-wrong') startCustom(P.list.filter(q => P.done[q.id] && !P.done[q.id].ok), P.title + ' · 本轮错题');
 });
 document.addEventListener('keydown', e => {
@@ -800,7 +859,7 @@ $('#set-overwrite').addEventListener('change', async e => {
 });
 $('#set-clear-rec').addEventListener('click', () => {
   if (!confirm('确定清空所有做题记录吗？题库会保留，但正确率、错题本、每日统计都会清零，无法恢复。')) return;
-  S.rec = {}; S.pos = {}; S.daily = {}; save(); toast('做题记录已清空');
+  S.rec = {}; S.pos = {}; S.daily = {}; S.sessions = {}; save(); toast('做题记录已清空');
 });
 $('#set-clear-all').addEventListener('click', () => {
   if (!confirm('确定删除全部题库和做题记录吗？此操作无法恢复，建议先导出备份。')) return;
