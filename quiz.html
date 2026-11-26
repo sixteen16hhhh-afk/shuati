@@ -66,7 +66,9 @@ details.menu>summary::-webkit-details-marker{display:none}
 .resume-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:10px}
 .resume-row+.resume-row{border-top:1px solid var(--line);margin-top:10px}
 .resume-btns{display:flex;gap:4px;flex:none}
-.linkbtn{background:none;border:0;padding:0 4px;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline}
+.small-btn{font-size:13px;min-height:30px;padding:4px 10px}
+.restart-row{margin-top:8px}
+@media (max-width:560px){.resume-row{flex-wrap:wrap}.resume-btns{width:100%}.resume-btns .btn{flex:1}}
 /* practice */
 .pbar{display:flex;align-items:center;gap:8px}
 .ptitle{flex:1;text-align:center;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -460,14 +462,16 @@ function renderBanks() {
       <div class="resume-row"><div style="min-width:0"><b>${esc(g.s.title)}</b> · ${MODE_NAME[g.s.mode]}
         <div class="muted small">停在第 ${g.i + 1} / ${g.list.length} 题 · 已答 ${g.answered} 题</div></div>
         <div class="resume-btns"><button class="btn primary" data-act="resume" data-key="${esc(k)}">继续</button>
-        <button class="btn ghost small" data-act="drop" data-key="${esc(k)}" title="放弃这次进度">放弃</button></div></div>`).join('')}</div>` : '';
+        <button class="btn" data-act="restart" data-key="${esc(k)}">重新开始</button>
+        <button class="btn ghost" data-act="drop" data-key="${esc(k)}" title="删掉这次进度">放弃</button></div></div>`).join('')}</div>` : '';
   const sessLabel = (bankId, mode, base) => {
     const g = getSession(sessKey(bankId, mode));
     return g ? `继续${base}（第 ${g.i + 1}/${g.list.length} 题）` : base;
   };
   el.innerHTML = `<div class="head-row"><h2>我的题库</h2><button class="btn" data-act="goimport">＋ 导入</button></div>` + resumeHtml + S.banks.map(b => {
     const st = bankStats(b);
-    const hasSeq = !!getSession(sessKey(b.id, 'seq')), hasRnd = !!getSession(sessKey(b.id, 'random'));
+    const restarts = [['seq', '顺序从第 1 题重新开始'], ['random', '重新随机出题'], ['wrong', '错题本重新开始']]
+      .filter(([m]) => getSession(sessKey(b.id, m)));
     return `<div class="card">
       <div class="bank-top"><div style="min-width:0"><h3>${esc(b.name)}</h3>
         <div class="muted small">${st.total} 题 · 单选 ${st.single} · 多选 ${st.multi} · 判断 ${st.judge}</div></div>
@@ -483,9 +487,8 @@ function renderBanks() {
         <button class="btn" data-act="random" data-id="${b.id}">${sessLabel(b.id, 'random', '随机练习')}</button>
         <button class="btn" data-act="wrong" data-id="${b.id}" ${st.wrong || getSession(sessKey(b.id, 'wrong')) ? '' : 'disabled'}>${getSession(sessKey(b.id, 'wrong')) ? sessLabel(b.id, 'wrong', '错题本') : '错题本 ' + st.wrong}</button>
       </div>
-      ${hasSeq || hasRnd ? `<div class="muted small" style="margin-top:8px">想从头开始？
-        ${hasSeq ? `<button class="linkbtn" data-act="seq-new" data-id="${b.id}">顺序从第 1 题重新开始</button>` : ''}
-        ${hasRnd ? `<button class="linkbtn" data-act="random-new" data-id="${b.id}">重新随机出题</button>` : ''}</div>` : ''}
+      ${restarts.length ? `<div class="actions restart-row">${restarts.map(([m, label]) =>
+        `<button class="btn small-btn" data-act="restart" data-key="${esc(sessKey(b.id, m))}">↺ ${label}</button>`).join('')}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -494,6 +497,7 @@ $('#v-banks').addEventListener('click', e => {
   const id = b.dataset.id, bank = id && getBank(id), act = b.dataset.act;
   if (act === 'goimport') return go('import');
   if (act === 'resume') { if (!resumeSession(b.dataset.key)) renderBanks(); return; }
+  if (act === 'restart') { restartSession(b.dataset.key); return; }
   if (act === 'drop') {
     if (!confirm('放弃这次的刷题进度吗？已经答过的题的对错记录和错题本不受影响。')) return;
     const s = S.sessions[b.dataset.key];
@@ -502,7 +506,6 @@ $('#v-banks').addEventListener('click', e => {
   }
   if (!bank) return;
   if (act === 'seq' || act === 'random' || act === 'wrong') return startPractice(bank.id, act);
-  if (act === 'seq-new' || act === 'random-new') return startPractice(bank.id, act.replace('-new', ''), true);
   b.closest('details') && b.closest('details').removeAttribute('open');
   if (act === 'rename') {
     const n = prompt('新的题库名称', bank.name);
@@ -601,6 +604,16 @@ function resumeSession(key) {
   toast(`已回到上次的进度：第 ${g.i + 1} 题`);
   return true;
 }
+/* 重新开始：清掉这一轮的答题进度（做题记录、错题本、统计都保留），同一模式从头再来 */
+function restartSession(key) {
+  const g = getSession(key); if (!g) { renderBanks(); return; }
+  const n = g.answered;
+  if (n && !confirm(`重新开始会清空这一轮已答的 ${n} 题进度，从头再做。做题记录、错题本和统计不受影响。确定吗？`)) return;
+  delete S.sessions[key]; save(); P = null;
+  if (g.s.mode === 'custom') startCustom(g.list, g.s.title);
+  else startPractice(g.s.bankId, g.s.mode, true);
+  if (P) toast('已重新开始'); else go('banks'); // 比如错题本已经清空，就回到题库页
+}
 function startPractice(bankId, mode, fresh) {
   const bank = getBank(bankId); if (!bank) return;
   const key = sessKey(bankId, mode);
@@ -659,7 +672,8 @@ function renderPractice() {
       <div class="ptitle">${esc(P.title)} · ${MODE_NAME[P.mode]}</div>
       <button class="btn ghost" data-act="card">答题卡</button></div>
     <div class="progress"><div style="width:${(P.i + 1) / n * 100}%"></div></div>
-    ${P.card ? `<div class="card"><div class="muted small" style="margin-bottom:8px">已答 ${answered}/${n} · 点题号跳转</div><div class="grid">${P.list.map((x, i) => {
+    ${P.card ? `<div class="card"><div class="head-row" style="margin-bottom:8px"><span class="muted small">已答 ${answered}/${n} · 点题号跳转</span>
+      <button class="btn small-btn" data-act="restart-here">↺ 重新开始本轮</button></div><div class="grid">${P.list.map((x, i) => {
       const d = P.done[x.id]; return `<button data-act="jump" data-i="${i}" class="${d ? (d.ok ? 'g-ok' : 'g-bad') : ''} ${i === P.i ? 'cur' : ''}">${i + 1}</button>`;
     }).join('')}</div></div>` : ''}
     <div class="card">
@@ -729,6 +743,7 @@ $('#v-practice').addEventListener('click', e => {
   else if (act === 'next') next();
   else if (act === 'prev') prev();
   else if (act === 'card') { P.card = !P.card; renderPractice(); }
+  else if (act === 'restart-here') restartSession(P.key);
   else if (act === 'jump') moveTo(+b.dataset.i);
   else if (act === 'exit') { const saved = !P.finished && Object.keys(P.done).length; P = null; go('banks'); if (saved) toast('进度已保存，下次可以继续'); }
   else if (act === 'again') startPractice(P.bankId, P.mode, true);
